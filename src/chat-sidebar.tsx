@@ -650,10 +650,7 @@ function ChatResponse(props: any) {
             <div
               className={`chat-message-from-icon chat-message-from-icon-${chatParticipantId} ${isDarkTheme() ? 'dark' : ''}`}
             >
-              <img
-                src={msg.participant.iconPath}
-                alt={`${msg.participant.name || 'Assistant'} icon`}
-              />
+              <img src={msg.participant.iconPath} alt="" />
             </div>
           )}
           <div className="chat-message-from-title">
@@ -786,6 +783,7 @@ function ChatResponse(props: any) {
                     rel="noopener noreferrer"
                   >
                     {item.content.title}
+                    <span className="nbi-sr-only"> (opens in new tab)</span>
                   </a>
                 </div>
               );
@@ -3067,29 +3065,26 @@ function SidebarComponent(props: any) {
                   className={`user-input-context user-input-context-active-file ${contextOn ? 'on' : 'off'}`}
                 >
                   <div>{currentFileContextTitle}</div>
-                  {contextOn ? (
-                    <button
-                      type="button"
-                      className="user-input-context-toggle"
-                      onClick={() => setContextOn(!contextOn)}
-                      aria-label="Stop using current file as context"
-                      aria-pressed="true"
-                      title="Use as context"
-                    >
+                  <button
+                    type="button"
+                    className="user-input-context-toggle"
+                    onClick={() => setContextOn(!contextOn)}
+                    aria-label={
+                      contextOn
+                        ? 'Stop using current file as context'
+                        : 'Use current file as context'
+                    }
+                    aria-pressed={contextOn}
+                    title={
+                      contextOn ? 'Use as context' : "Don't use as context"
+                    }
+                  >
+                    {contextOn ? (
                       <VscEye aria-hidden="true" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="user-input-context-toggle"
-                      onClick={() => setContextOn(!contextOn)}
-                      aria-label="Use current file as context"
-                      aria-pressed="false"
-                      title="Don't use as context"
-                    >
+                    ) : (
                       <VscEyeClosed aria-hidden="true" />
-                    </button>
-                  )}
+                    )}
+                  </button>
                 </div>
               )}
               {selectedContextFiles.map(file => {
@@ -3135,9 +3130,35 @@ function SidebarComponent(props: any) {
                     <button
                       type="button"
                       className="user-input-context-toggle"
-                      onClick={() =>
-                        removeSelectedContextFile(file.serverPath ?? file.path)
-                      }
+                      onClick={event => {
+                        // The row this button lives in is about to disappear
+                        // from the DOM, which would otherwise drop focus to
+                        // ``<body>``. Hand focus to the next remove button
+                        // in the row (preferred) or back to the textarea so
+                        // keyboard users keep their place.
+                        const target = event.currentTarget;
+                        const row =
+                          target.closest('.user-input-context-row') ?? null;
+                        const buttons = row
+                          ? Array.from(
+                              row.querySelectorAll<HTMLButtonElement>(
+                                'button.user-input-context-toggle'
+                              )
+                            )
+                          : [];
+                        const idx = buttons.indexOf(target);
+                        const next = buttons[idx + 1] ?? buttons[idx - 1];
+                        removeSelectedContextFile(file.serverPath ?? file.path);
+                        // Defer the focus move past the React re-render that
+                        // unmounts ``target``.
+                        window.requestAnimationFrame(() => {
+                          if (next && document.contains(next)) {
+                            next.focus();
+                          } else {
+                            promptInputRef.current?.focus();
+                          }
+                        });
+                      }}
                       aria-label={`Remove attached file ${label}`}
                       title="Remove attached file"
                     >
@@ -3925,6 +3946,7 @@ function GitHubCopilotLoginDialogBodyComponent(props: any) {
               rel="noopener noreferrer"
             >
               GitHub Copilot
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>{' '}
             requires a subscription and it has a free tier. GitHub Copilot is
             subject to the{' '}
@@ -3934,6 +3956,7 @@ function GitHubCopilotLoginDialogBodyComponent(props: any) {
               rel="noopener noreferrer"
             >
               GitHub Terms for Additional Products and Features
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>
             .
           </div>
@@ -3947,6 +3970,7 @@ function GitHubCopilotLoginDialogBodyComponent(props: any) {
               rel="noopener noreferrer"
             >
               GitHub Copilot chat terms
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>
             . Review the terms to understand about usage, limitations and ways
             to improve GitHub Copilot. Please review{' '}
@@ -3956,6 +3980,7 @@ function GitHubCopilotLoginDialogBodyComponent(props: any) {
               rel="noopener noreferrer"
             >
               Privacy Statement
+              <span className="nbi-sr-only"> (opens in new tab)</span>
             </a>
             .
           </div>
