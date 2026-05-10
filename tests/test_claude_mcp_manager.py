@@ -221,9 +221,9 @@ class TestClaudeMCPManagerWrites:
         )
         captured: dict = {}
 
-        async def fake_subprocess(*argv, cwd, stdin, stdout, stderr):
+        async def fake_subprocess(*argv, **kwargs):
             captured["argv"] = list(argv)
-            captured["cwd"] = cwd
+            captured["cwd"] = kwargs.get("cwd")
             proc = MagicMock()
 
             async def communicate():
@@ -271,7 +271,7 @@ class TestClaudeMCPManagerWrites:
         )
         captured: dict = {}
 
-        async def fake_subprocess(*argv, cwd, stdin, stdout, stderr):
+        async def fake_subprocess(*argv, **kwargs):
             captured["argv"] = list(argv)
             proc = MagicMock()
 
@@ -302,7 +302,7 @@ class TestClaudeMCPManagerWrites:
             lambda: "/usr/local/bin/claude",
         )
 
-        async def fake_subprocess(*argv, cwd, stdin, stdout, stderr):
+        async def fake_subprocess(*argv, **kwargs):
             proc = MagicMock()
 
             async def communicate():

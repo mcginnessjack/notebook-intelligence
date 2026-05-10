@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import re
-import subprocess
 import tarfile
 import tempfile
 import urllib.error
@@ -163,31 +162,7 @@ def _tarball_url(owner: str, repo: str, ref: Optional[str]) -> str:
     return f"https://api.github.com/repos/{owner}/{repo}/tarball/{ref_path}"
 
 
-def _get_github_token() -> Optional[str]:
-    """Look up a GitHub token for API auth.
-
-    Order matches the gh CLI's own precedence: GITHUB_TOKEN, then GH_TOKEN,
-    then whatever `gh auth token` returns. The gh-CLI fallback lets users in
-    corporate/SSO environments inherit their existing login without setting
-    an env var.
-    """
-    for var in ("GITHUB_TOKEN", "GH_TOKEN"):
-        token = os.environ.get(var)
-        if token and token.strip():
-            return token.strip()
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return None
-    stdout = result.stdout.strip()
-    if result.returncode == 0 and stdout:
-        return stdout
-    return None
+from notebook_intelligence.util import resolve_github_token  # noqa: E402
 
 
 def _github_api_headers(override_token: Optional[str] = None) -> dict:
@@ -203,7 +178,7 @@ def _github_api_headers(override_token: Optional[str] = None) -> dict:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    token = override_token if override_token is not None else _get_github_token()
+    token = override_token if override_token is not None else resolve_github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers

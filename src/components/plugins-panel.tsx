@@ -485,7 +485,12 @@ function MarketplaceAddDialog(props: {
           autoFocus
         />
       </div>
-      {!props.allowGithubImport && (
+      {props.allowGithubImport ? (
+        <div className="nbi-form-hint">
+          Private GitHub sources work if <code>GITHUB_TOKEN</code> is set or{' '}
+          <code>gh auth login</code> is configured on the Jupyter server.
+        </div>
+      ) : (
         <div className="nbi-form-hint">
           GitHub-sourced marketplaces are disabled by your administrator. Use a
           non-GitHub URL or a local filesystem path.

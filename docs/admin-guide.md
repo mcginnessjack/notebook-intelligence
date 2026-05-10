@@ -414,6 +414,20 @@ Or via env: `NBI_ALLOW_GITHUB_PLUGIN_IMPORT=false` (also accepts `true`/`1`/`0`/
 
 > **Trust model.** Plugins installed via `claude plugin install` execute as part of Claude Code sessions; NBI does not signature-verify or sandbox them, and the `claude` CLI's validation is best-effort. The marketplace-add path is a network fetch (server-side) — for multi-tenant or regulated deployments, default to `plugins_management_policy = force-off` and curate plugins server-side, or restrict marketplaces to vetted sources only.
 
+#### GitHub auth for marketplace add
+
+When the marketplace source is a GitHub URL or `owner/repo` shorthand, NBI resolves a token with the same precedence as Skills' GitHub import:
+
+1. `GITHUB_TOKEN` env var (server-process scope)
+2. `GH_TOKEN` env var
+3. `gh auth token` subprocess output (only if `gh` is on PATH)
+
+Resolved tokens are injected into the `claude plugin marketplace add` subprocess via env, never argv — they do not appear in DEBUG logs. The chain is re-evaluated per call, so rotating the token (env update or `gh auth refresh`) takes effect on the next add. Required scope: `repo` for classic PATs, or `contents:read` on the target repo for fine-grained PATs. When `gh` is not installed the third step short-circuits silently; rely on `GITHUB_TOKEN` instead.
+
+The chain only fires for github.com sources today. **GitHub Enterprise instances are not detected** as GitHub by `is_github_marketplace_source`, so a GHE marketplace URL falls through to anonymous git auth — track that as a separate item if your org runs GHE.
+
+For air-gap deployments, marketplace-add inherits the JupyterLab process env, so the same `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` / `NODE_EXTRA_CA_CERTS` settings documented in [Custom CA certs and corporate proxies](#custom-ca-certs-and-corporate-proxies) apply. Pre-installed plugins (under `~/.claude/plugins/`) keep loading without any network access.
+
 ---
 
 ## Multi-tenancy and per-team scoping

@@ -3,6 +3,7 @@
 import os
 import base64
 import shutil
+import subprocess
 from typing import Optional, Set
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -32,6 +33,41 @@ def resolve_claude_cli_path() -> Optional[str]:
     if explicit:
         return explicit
     return shutil.which("claude")
+
+
+def resolve_github_token() -> Optional[str]:
+    """Look up a GitHub token for repo / API auth.
+
+    Order matches the gh CLI's own precedence: GITHUB_TOKEN, then GH_TOKEN,
+    then whatever ``gh auth token`` returns. The gh-CLI fallback lets users
+    in corporate/SSO environments inherit their existing login without
+    setting an env var — important when the JupyterLab server is started
+    by JupyterHub / a service manager that doesn't preserve the user's
+    interactive shell environment.
+    """
+    for var in ("GITHUB_TOKEN", "GH_TOKEN"):
+        token = os.environ.get(var)
+        if token and token.strip():
+            return token.strip()
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # `gh auth token` should print one line, but defensively take only the
+    # first non-empty line so a malformed install doesn't smuggle extra
+    # bytes into the token.
+    for line in result.stdout.splitlines():
+        token = line.strip()
+        if token:
+            return token
+    return None
 
 def extract_llm_generated_code(code: str) -> str:
     if code.endswith("```"):

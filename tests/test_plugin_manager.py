@@ -268,6 +268,132 @@ class TestPluginManagerWrites:
                 )
             )
 
+    def test_add_marketplace_injects_github_token_for_github_source(
+        self, fake_cli, monkeypatch
+    ):
+        captured: dict = {}
+        _stub_subprocess(monkeypatch, captured=captured)
+        # Force the token resolver to return a known value (skip env / gh).
+        monkeypatch.setattr(
+            "notebook_intelligence.plugin_manager.resolve_github_token",
+            lambda: "ghp_testtoken",
+        )
+        manager = PluginManager()
+        asyncio.run(
+            manager.add_marketplace(source="acme/repo", scope="user")
+        )
+        # Token flows through env, not argv — kept out of DEBUG logs.
+        env = captured["kwargs"]["env"]
+        assert env["GITHUB_TOKEN"] == "ghp_testtoken"
+        assert env["GH_TOKEN"] == "ghp_testtoken"
+        assert "ghp_testtoken" not in " ".join(captured["argv"])
+
+    def test_add_marketplace_skips_token_injection_for_local_source(
+        self, fake_cli, monkeypatch
+    ):
+        captured: dict = {}
+        _stub_subprocess(monkeypatch, captured=captured)
+        monkeypatch.setattr(
+            "notebook_intelligence.plugin_manager.resolve_github_token",
+            lambda: "ghp_testtoken",
+        )
+        manager = PluginManager()
+        asyncio.run(
+            manager.add_marketplace(
+                source="/abs/path/marketplace", scope="user"
+            )
+        )
+        # Local path → no env-overrides → subprocess inherits parent env
+        # unchanged (None signals "don't override"). The token shouldn't
+        # leak into requests for non-GitHub sources.
+        assert captured["kwargs"]["env"] is None
+
+    def test_add_marketplace_skips_token_injection_when_unavailable(
+        self, fake_cli, monkeypatch
+    ):
+        captured: dict = {}
+        _stub_subprocess(monkeypatch, captured=captured)
+        monkeypatch.setattr(
+            "notebook_intelligence.plugin_manager.resolve_github_token",
+            lambda: None,
+        )
+        # Belt-and-suspenders: scrub real GitHub envs so a stale or
+        # accidentally-broken patch can't leak the developer's token into
+        # the test process.
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        manager = PluginManager()
+        asyncio.run(
+            manager.add_marketplace(source="acme/repo", scope="user")
+        )
+        assert captured["kwargs"]["env"] is None
+
+    def test_add_marketplace_skips_token_for_non_github_https(
+        self, fake_cli, monkeypatch
+    ):
+        captured: dict = {}
+        _stub_subprocess(monkeypatch, captured=captured)
+        monkeypatch.setattr(
+            "notebook_intelligence.plugin_manager.resolve_github_token",
+            lambda: "ghp_should_not_be_used",
+        )
+        manager = PluginManager()
+        asyncio.run(
+            manager.add_marketplace(
+                source="https://example.com/manifest", scope="user"
+            )
+        )
+        # Non-GitHub HTTPS source must not receive a github.com PAT.
+        assert captured["kwargs"]["env"] is None
+
+    def test_add_marketplace_env_overrides_win_over_inherited(
+        self, fake_cli, monkeypatch
+    ):
+        captured: dict = {}
+        _stub_subprocess(monkeypatch, captured=captured)
+        monkeypatch.setenv("GITHUB_TOKEN", "stale_from_parent_env")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setattr(
+            "notebook_intelligence.plugin_manager.resolve_github_token",
+            lambda: "fresh_resolved",
+        )
+        manager = PluginManager()
+        asyncio.run(
+            manager.add_marketplace(source="acme/repo", scope="user")
+        )
+        env = captured["kwargs"]["env"]
+        # Override wins on collision.
+        assert env["GITHUB_TOKEN"] == "fresh_resolved"
+        # Inherited keys survive the merge.
+        assert env["PATH"] == "/usr/bin:/bin"
+
+    def test_add_marketplace_remediation_hint_on_auth_failure(
+        self, fake_cli, monkeypatch
+    ):
+        # CLI fails with a typical git-auth-missing message; we should
+        # wrap the error with an actionable hint when the source is
+        # GitHub and we had no token to inject.
+        async def fake_subprocess(*argv, **kwargs):
+            proc = MagicMock()
+
+            async def communicate():
+                return (b"", b"fatal: could not read Username for 'https://github.com'")
+
+            proc.communicate = communicate
+            proc.returncode = 1
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+        monkeypatch.setattr(
+            "notebook_intelligence.plugin_manager.resolve_github_token",
+            lambda: None,
+        )
+        manager = PluginManager()
+        with pytest.raises(ValueError, match="GITHUB_TOKEN"):
+            asyncio.run(
+                manager.add_marketplace(source="acme/repo", scope="user")
+            )
+
     def test_github_gate_independent_of_policy_gate(
         self, fake_cli, monkeypatch
     ):

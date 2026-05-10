@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 from notebook_intelligence.util import resolve_claude_cli_path
@@ -100,8 +101,15 @@ async def run_claude_cli(
     cwd: Optional[str] = None,
     timeout: float = CLI_TIMEOUT_DEFAULT_SECONDS,
     label: str = "claude",
+    env_overrides: Optional[dict[str, str]] = None,
 ) -> str:
     """Run ``claude <tail...>`` and return its stdout.
+
+    ``env_overrides`` merges into the parent's environment for this call
+    only — used by callers that need to inject auth (e.g., a resolved
+    ``GITHUB_TOKEN`` for marketplace fetches against private repos).
+    Values pass via env, not argv, so they don't appear in the redacted
+    DEBUG log.
 
     Raises:
         FileNotFoundError: when the CLI can't be resolved.
@@ -114,9 +122,15 @@ async def run_claude_cli(
     # individual successful invocations. Failures still raise a `ValueError`
     # carrying the CLI's own stderr, which callers surface to the user.
     log.debug("%s invocation: %s", label, " ".join(redact_argv_for_log(argv[1:])))
+    if env_overrides:
+        # Log only the keys, never the values — answers "did my token get
+        # used?" without leaking the secret.
+        log.debug("%s env injected: %s", label, sorted(env_overrides.keys()))
+    env = {**os.environ, **env_overrides} if env_overrides else None
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
+        env=env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

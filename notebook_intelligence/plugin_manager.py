@@ -32,6 +32,7 @@ from notebook_intelligence._claude_cli import (
     run_claude_cli,
     validate_scope,
 )
+from notebook_intelligence.util import resolve_github_token
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,23 @@ _GITHUB_URL_SCHEMES = ("http://", "https://", "git://", "ssh://")
 _GITHUB_PREFIX_SCHEMES = ("github:", "git@github.com:")
 _ALLOWED_NON_GITHUB_SCHEMES = ("https://",)
 _LOCAL_PREFIXES = (".", "/", "~")
+
+# Substrings the underlying `git`/`claude` produce when auth is missing
+# or wrong. Used to upgrade an opaque CLI error into a remediation hint
+# pointing the user at GITHUB_TOKEN / `gh auth login`.
+_AUTH_FAILURE_MARKERS = (
+    "authentication failed",
+    "could not read username",
+    "could not read password",
+    "permission denied",
+    "401",
+    "403",
+)
+
+
+def _looks_like_auth_failure(err: str) -> bool:
+    lower = err.lower()
+    return any(marker in lower for marker in _AUTH_FAILURE_MARKERS)
 
 
 def is_github_marketplace_source(source: str) -> bool:
@@ -188,11 +206,37 @@ class PluginManager:
             raise PermissionError(
                 "Adding marketplaces from GitHub is disabled by your administrator"
             )
+        # Inject a GitHub token when adding a GitHub-source marketplace so
+        # private repos and corporate-managed GitHub work without asking
+        # the user to set process-level env. Resolution chain matches the
+        # Skills GitHub-import flow: GITHUB_TOKEN → GH_TOKEN → `gh auth
+        # token`. The token never lands in argv (env-only), so DEBUG logs
+        # don't leak it.
+        env_overrides: Optional[dict[str, str]] = None
+        is_github = is_github_marketplace_source(source)
+        if is_github:
+            token = resolve_github_token()
+            if token:
+                env_overrides = {"GITHUB_TOKEN": token, "GH_TOKEN": token}
         async with self._write_lock:
-            await self._run_cli(
-                ["plugin", "marketplace", "add", "--scope", scope, source],
-                timeout=CLI_TIMEOUT_MARKETPLACE_ADD_SECONDS,
-            )
+            try:
+                await self._run_cli(
+                    ["plugin", "marketplace", "add", "--scope", scope, source],
+                    timeout=CLI_TIMEOUT_MARKETPLACE_ADD_SECONDS,
+                    env_overrides=env_overrides,
+                )
+            except ValueError as exc:
+                # Claude/git's auth-failure messages are opaque to a
+                # browser user. When we know the source is GitHub and we
+                # didn't have a token to inject, prepend a remediation
+                # hint so the panel error tells them what to fix.
+                if is_github and env_overrides is None and _looks_like_auth_failure(str(exc)):
+                    raise ValueError(
+                        f"{exc}\n\nNo GitHub token was available — set "
+                        "GITHUB_TOKEN or run `gh auth login` on the "
+                        "Jupyter server, then retry."
+                    ) from exc
+                raise
 
     async def remove_marketplace(self, *, name: str) -> None:
         if not name:
@@ -234,6 +278,15 @@ class PluginManager:
         )
 
     async def _run_cli(
-        self, tail: list[str], *, timeout: float = CLI_TIMEOUT_SECONDS
+        self,
+        tail: list[str],
+        *,
+        timeout: float = CLI_TIMEOUT_SECONDS,
+        env_overrides: Optional[dict[str, str]] = None,
     ) -> str:
-        return await run_claude_cli(tail, timeout=timeout, label="claude plugin")
+        return await run_claude_cli(
+            tail,
+            timeout=timeout,
+            label="claude plugin",
+            env_overrides=env_overrides,
+        )
