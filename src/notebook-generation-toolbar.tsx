@@ -146,10 +146,13 @@ class NotebookGenerationToolbarController {
   private _submitPrompt(rawPrompt: string, showInChat: boolean): void {
     const prefixedPrompt = buildNotebookGenerationPrompt(rawPrompt);
     const externalRequestId = UUID.uuid4();
+    // chatMode and toolSelections are forced by the chat-sidebar handler
+    // (NotebookGeneration always needs agent mode + the notebook-edit
+    // toolset). Leaving them off the request keeps the toolbar
+    // independent of the sidebar's current configuration.
     const request: Partial<IRunChatCompletionRequest> = {
       type: RunChatCompletionType.NotebookGeneration,
       content: prefixedPrompt,
-      chatMode: '',
       externalRequestId,
       hideInChat: !showInChat
     };
