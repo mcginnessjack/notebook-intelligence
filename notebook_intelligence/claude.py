@@ -383,15 +383,13 @@ class ClaudeCodeClient():
         self._continue_conversation = value
 
     def is_connected(self):
-        # Status check guards the post-handshake window: when the worker
-        # raises in _client_thread_func, it sets FailedToConnect *before*
-        # signalling _connect_resolved, so any is_connected() call ordered
-        # after a connect() wait sees the failure. Without this check, a
-        # publish-after-start race in _start_worker_thread can resurrect a
-        # dead Thread reference whose is_alive() still reads True for the
-        # brief Python cleanup window, sending query() down the dead-thread
-        # path with the stale "Claude agent is not running" error instead
-        # of the intended "is not connected" path.
+        # `_client_thread_func` sets FailedToConnect *before* signalling
+        # `_connect_resolved`, so this short-circuit is reliable for any
+        # `is_connected()` call ordered after a `connect()` wait. Without
+        # it, the publish-after-start race in `_start_worker_thread` can
+        # resurrect a dead Thread reference whose `is_alive()` reads True
+        # for Python's brief cleanup window, sending `query()` down the
+        # dead-thread path with a misleading error.
         if self._status == ClaudeAgentClientStatus.FailedToConnect:
             return False
         return self._client_thread is not None and self._client_thread.is_alive()
