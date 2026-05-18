@@ -28,6 +28,26 @@ def jupyter_root(tmp_path, monkeypatch):
     return root
 
 
+_SHELL_TOOL_CMD = ["echo", "hi"]
+
+
+def _shell_tool_calls(popen_spy):
+    """Filter the Popen spy's call list to only those that originated from
+    run_command_in_embedded_terminal. Patching ``subprocess.Popen`` is
+    process-global, so other background threads (notably the bundled Claude
+    Agent SDK on CI) can call into the spy during the patch window. The
+    shell tool always passes ``shlex.split('echo hi')`` (a list); the
+    Claude SDK passes a tuple. Filter on that shape plus the exact command
+    so the security assertions don't depend on incidental noise calls.
+    """
+    out = []
+    for call in popen_spy.call_args_list:
+        first = call.args[0] if call.args else None
+        if isinstance(first, list) and first == _SHELL_TOOL_CMD:
+            out.append(call)
+    return out
+
+
 def _invoke(working_directory: str):
     """Drive run_command_in_embedded_terminal with a stubbed response and a
     Popen-spy so the test can observe whether a subprocess would have been
@@ -66,37 +86,39 @@ class TestEmbeddedTerminalCwdSandbox:
     def test_rejects_absolute_path_outside_jupyter_root(self, jupyter_root):
         result, popen_spy = _invoke("/etc")
         assert "outside allowed directory" in result
-        popen_spy.assert_not_called()
+        assert _shell_tool_calls(popen_spy) == []
 
     def test_rejects_relative_traversal_outside_jupyter_root(self, jupyter_root):
         # `..` from the root resolves above the root.
         result, popen_spy = _invoke("../../..")
         assert "outside allowed directory" in result
-        popen_spy.assert_not_called()
+        assert _shell_tool_calls(popen_spy) == []
 
     def test_rejects_nonexistent_directory(self, jupyter_root):
         result, popen_spy = _invoke("does-not-exist")
         assert "does not exist" in result
-        popen_spy.assert_not_called()
+        assert _shell_tool_calls(popen_spy) == []
 
     def test_rejects_path_that_is_a_file_not_a_directory(self, jupyter_root):
         f = jupyter_root / "note.txt"
         f.write_text("hi")
         result, popen_spy = _invoke("note.txt")
         assert "not a directory" in result
-        popen_spy.assert_not_called()
+        assert _shell_tool_calls(popen_spy) == []
 
     def test_allows_relative_subdirectory(self, jupyter_root):
         sub = jupyter_root / "work"
         sub.mkdir()
         result, popen_spy = _invoke("work")
         # When the path is valid, Popen is called with the sandboxed
-        # absolute path (str of the resolved subdir). Asserting on call_args
-        # rather than call_count keeps the security signal (the path WAS
-        # sandboxed) intact across Python versions where MagicMock semantics
-        # cause extra incidental calls in the post-Popen error path.
-        assert popen_spy.called
-        kwargs = popen_spy.call_args_list[0].kwargs
+        # absolute path (str of the resolved subdir). We filter the spy
+        # call list to just the shell tool's own Popen invocation because
+        # patching `subprocess.Popen` is process-global and other threads
+        # (e.g. the bundled Claude Agent SDK on CI) can land calls in the
+        # spy during the patch window.
+        my_calls = _shell_tool_calls(popen_spy)
+        assert len(my_calls) == 1
+        kwargs = my_calls[0].kwargs
         assert kwargs["cwd"] == str(sub.resolve())
         # Tool returns its standard happy-path string even though we never
         # actually executed anything (Popen is a MagicMock).
@@ -104,8 +126,9 @@ class TestEmbeddedTerminalCwdSandbox:
 
     def test_dot_means_jupyter_root(self, jupyter_root):
         result, popen_spy = _invoke(".")
-        assert popen_spy.called
-        kwargs = popen_spy.call_args_list[0].kwargs
+        my_calls = _shell_tool_calls(popen_spy)
+        assert len(my_calls) == 1
+        kwargs = my_calls[0].kwargs
         assert kwargs["cwd"] == str(jupyter_root.resolve())
 
     def test_rejects_workspace_symlink_pointing_outside(self, jupyter_root, tmp_path):
@@ -118,7 +141,7 @@ class TestEmbeddedTerminalCwdSandbox:
         link.symlink_to(outside, target_is_directory=True)
         result, popen_spy = _invoke("escape")
         assert "outside allowed directory" in result
-        popen_spy.assert_not_called()
+        assert _shell_tool_calls(popen_spy) == []
 
     def test_rejects_traversal_via_valid_subdir_prefix(self, jupyter_root):
         # `valid/../../..` resolves above the root even though the literal
@@ -128,7 +151,7 @@ class TestEmbeddedTerminalCwdSandbox:
         sub.mkdir()
         result, popen_spy = _invoke("valid/../../..")
         assert "outside allowed directory" in result
-        popen_spy.assert_not_called()
+        assert _shell_tool_calls(popen_spy) == []
 
     def test_rejects_null_byte_in_path(self, jupyter_root):
         # pathlib raises ValueError on embedded null bytes. The fix's
@@ -139,7 +162,7 @@ class TestEmbeddedTerminalCwdSandbox:
         # Either the explicit "outside" branch (after pathlib normalizes) or
         # the pathlib-raised ValueError -> "Error: ..." string. Both are
         # acceptable; the load-bearing assertion is no-spawn.
-        popen_spy.assert_not_called()
+        assert _shell_tool_calls(popen_spy) == []
 
 
 class TestJupyterTerminalCwdSandbox:
