@@ -296,6 +296,70 @@ class TestPluginManagerReads:
         result = asyncio.run(PluginManager().list_marketplaces())
         assert result[0][cli_field] == cli_value
 
+    def test_list_marketplaces_couples_plugin_count_and_plugin_names(
+        self, fake_cli, tmp_path, monkeypatch
+    ):
+        # plugin_count and plugin_names must stay in sync. If a future
+        # CLI surfaces only the count, the manifest's names must NOT be
+        # merged in (or the row would render "42 plugins: alpha, beta"
+        # with the two halves disagreeing). The whole pair is treated
+        # atomically: CLI sets both or the manifest sets both.
+        plugins_root = tmp_path / "plugins"
+        manifest = (
+            plugins_root
+            / "marketplaces"
+            / "acme"
+            / ".claude-plugin"
+            / "marketplace.json"
+        )
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "description": "from manifest",
+                    "plugins": [
+                        {"name": "alpha", "source": "./a"},
+                        {"name": "beta", "source": "./b"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", str(plugins_root))
+        # CLI surfaces only the count; names should NOT be backfilled.
+        _stub_subprocess(
+            monkeypatch,
+            captured={},
+            stdout=b'[{"name":"acme","source":"./acme","plugin_count":42}]',
+        )
+        result = asyncio.run(PluginManager().list_marketplaces())
+        assert result[0]["plugin_count"] == 42
+        assert "plugin_names" not in result[0]
+
+    def test_list_marketplaces_rejects_path_traversal_in_cli_name(
+        self, fake_cli, tmp_path, monkeypatch
+    ):
+        # Defense in depth: the CLI shouldn't return a name like
+        # `../evil`, but `_read_marketplace_manifest` now validates
+        # anyway. A bad CLI-returned name causes the enrichment to
+        # skip for that entry (caught at ValueError), leaving the rest
+        # of the list intact.
+        monkeypatch.setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", str(tmp_path / "plugins"))
+        _stub_subprocess(
+            monkeypatch,
+            captured={},
+            stdout=b'[{"name":"../evil","source":"./e"},{"name":"good","source":"./g"}]',
+        )
+        result = asyncio.run(PluginManager().list_marketplaces())
+        # Both entries come back; neither is enriched (the bad one is
+        # rejected by name validation, the good one has no manifest in
+        # the empty cache dir).
+        assert [m["name"] for m in result] == ["../evil", "good"]
+        # No enrichment keys were synthesized for the path-traversal
+        # entry; the row falls back to the CLI fields only.
+        assert "description" not in result[0]
+        assert "plugin_count" not in result[0]
+
     def test_list_marketplaces_overrides_empty_cli_string_with_manifest_value(
         self, fake_cli, tmp_path, monkeypatch
     ):

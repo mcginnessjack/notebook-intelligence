@@ -451,7 +451,7 @@ function MarketplaceRow(props: {
       </div>
       <div className="nbi-skill-row-actions" onClick={e => e.stopPropagation()}>
         <button
-          className="jp-Dialog-button jp-mod-reject jp-mod-styled"
+          className="jp-Dialog-button jp-mod-accept jp-mod-styled"
           onClick={props.onUpdate}
           disabled={props.busy}
           title="Refresh this marketplace from its source"

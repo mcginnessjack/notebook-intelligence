@@ -175,6 +175,12 @@ class PluginManager:
         # FileNotFoundError, PermissionError, IsADirectoryError; the
         # ValueError branch covers our own JSON-shape complaints and the
         # raw UnicodeDecodeError that read_text can raise.
+        # `plugin_count` and `plugin_names` are coupled: if the CLI
+        # surfaces either, the row must show the CLI's view of both,
+        # otherwise the count and the visible name list could disagree
+        # (e.g. "42 plugins: alpha, beta" because count came from CLI
+        # and names came from the manifest).
+        _coupled_keys = ("plugin_count", "plugin_names")
         for entry in marketplaces:
             name = entry.get("name")
             if not isinstance(name, str):
@@ -183,10 +189,21 @@ class PluginManager:
                 details = self._read_marketplace_details(name)
             except (OSError, ValueError, UnicodeDecodeError):
                 continue
+            cli_supplied_plugin_meta = any(
+                key in entry and entry.get(key) is not None
+                for key in _coupled_keys
+            )
             for key, value in details.items():
-                # Prefer a future CLI value when present AND truthy: an
-                # empty-string description from the CLI must not shadow
-                # a useful description from the manifest.
+                if key in _coupled_keys:
+                    # Only overlay when CLI provided neither half.
+                    if cli_supplied_plugin_meta:
+                        continue
+                    entry[key] = value
+                    continue
+                # Other enrichment keys: prefer a future CLI value when
+                # present AND truthy. An empty-string description from
+                # the CLI must not shadow a useful description from the
+                # manifest.
                 if not entry.get(key):
                     entry[key] = value
         return marketplaces
@@ -210,7 +227,18 @@ class PluginManager:
     def _read_marketplace_manifest(self, marketplace_name: str) -> dict[str, Any]:
         """Read the cached marketplace.json. Raises FileNotFoundError /
         ValueError on missing or malformed input.
+
+        Validate the name against the same path-traversal / NUL / flag
+        checks that gate ``list_marketplace_plugins``. The CLI sanitizes
+        its own output today, but consistency keeps the manifest-read
+        layer self-defending instead of relying on every caller to gate
+        upstream.
         """
+        # Raises ValueError on path-traversal / NUL / leading-dash /
+        # path-separator names. The enrichment caller in
+        # `list_marketplaces` catches ValueError and skips, so a single
+        # bad CLI-returned name still doesn't break the list.
+        marketplace_name = _validate_marketplace_name(marketplace_name)
         manifest = (
             _claude_plugins_root()
             / "marketplaces"
