@@ -70,7 +70,22 @@ dependencies = [
 dynamic = ["version", "description", "authors", "urls", "keywords"]
 
 [project.optional-dependencies]
-test = ["pytest>=7.0,<9", "pyyaml"]
+# pytest-timeout caps any single test at the [tool.pytest.ini_options]
+# default below. Specific need: the async stdio-subprocess tests in
+# tests/test_mcp_client_shim.py have no internal timeout, so a hung
+# pipe in the underlying ``mcp`` SDK would otherwise hang the entire
+# CI job. ``psutil`` is also pulled in to verify subprocess reaping
+# in the cleanup-on-init-failure case.
+test = ["pytest>=7.0,<9", "pytest-timeout>=2.3.0", "psutil", "pyyaml"]
+
+[tool.pytest.ini_options]
+# Cap every test at 30 seconds. The async stdio-subprocess tests in
+# tests/test_mcp_client_shim.py spawn a real MCP server and rely on
+# the underlying ``mcp`` SDK's pipes; if a pipe ever deadlocks (the
+# SDK has no built-in timeout), the test would otherwise hang the CI
+# job. Other tests in the suite run in milliseconds, so 30s is
+# generous headroom rather than a target.
+timeout = 30
 
 [tool.hatch.version]
 source = "nodejs"

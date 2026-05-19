@@ -25,6 +25,7 @@ pin). Once that lands and propagates through ``fastmcp``-shaped
 clients, this shim can be reverted to a direct ``fastmcp`` import.
 """
 
+import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -104,8 +105,11 @@ class Client:
             # The exit stack owns every context we entered above; let it
             # tear them down in reverse order before re-raising so we
             # don't leak the stdio subprocess or the HTTP connection on
-            # a partially-constructed session.
-            await stack.__aexit__(*_current_exc())
+            # a partially-constructed session. ``sys.exc_info()`` inside
+            # an except block returns the in-flight exception triple,
+            # which AsyncExitStack.__aexit__ uses to invoke each entered
+            # context's __aexit__ as if the unwind were native.
+            await stack.__aexit__(*sys.exc_info())
             raise
         self._stack = stack
         self._session = session
@@ -146,12 +150,3 @@ class Client:
     async def get_prompt(self, name: str, arguments: dict):
         """Return ``mcp.types.GetPromptResult`` (has ``.messages``)."""
         return await self._require_session().get_prompt(name, arguments)
-
-
-def _current_exc():
-    """Return ``(exc_type, exc, tb)`` for the in-flight exception, or
-    ``(None, None, None)`` if there isn't one. Used by ``__aenter__`` to
-    forward the original failure to the exit-stack cleanup so partial
-    setup unwinds cleanly."""
-    import sys
-    return sys.exc_info()

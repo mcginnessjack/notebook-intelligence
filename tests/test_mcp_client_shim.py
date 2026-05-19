@@ -22,7 +22,9 @@ import os
 import sys
 import tempfile
 import textwrap
+import time
 
+import psutil
 import pytest
 
 from mcp.types import Implementation
@@ -236,7 +238,10 @@ def test_context_cleanup_on_initialize_failure(tmp_path):
     """If the server fails to initialize, ``__aenter__`` must unwind
     every context it entered (the stdio subprocess) before re-raising,
     so a partial connect doesn't leak processes. Drives an
-    intentionally-broken server script.
+    intentionally-broken server script and verifies via psutil that no
+    Python child process survives the failure. Without the psutil
+    check, the shim could silently regress to leaking subprocesses and
+    the test would still pass on the ``pytest.raises`` alone.
     """
     bad_script = tmp_path / "bad_server.py"
     bad_script.write_text(
@@ -251,6 +256,23 @@ def test_context_cleanup_on_initialize_failure(tmp_path):
         )
     )
 
+    parent = psutil.Process(os.getpid())
+
+    def _shim_children() -> list[psutil.Process]:
+        """Return live children whose command line invoked our bad
+        server. Filters out unrelated subprocesses pytest itself may
+        spawn (xdist workers, coverage helpers) so the assertion
+        isolates the shim's own footprint.
+        """
+        out = []
+        for child in parent.children(recursive=True):
+            try:
+                if str(bad_script) in child.cmdline():
+                    out.append(child)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return out
+
     async def go():
         transport = StdioTransport(
             command=sys.executable,
@@ -262,4 +284,19 @@ def test_context_cleanup_on_initialize_failure(tmp_path):
             async with client:
                 pass  # pragma: no cover
 
+    assert _shim_children() == []
     asyncio.run(go())
+
+    # Briefly poll for the subprocess to be reaped. The shim's
+    # AsyncExitStack unwind happens synchronously inside __aenter__'s
+    # except branch, but the OS-level wait for SIGCHLD may lag a tick.
+    # A 2-second budget is generous; in practice this resolves under
+    # 50ms locally.
+    deadline = time.monotonic() + 2.0
+    while _shim_children() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    leaked = _shim_children()
+    assert not leaked, (
+        f"shim leaked {len(leaked)} subprocess(es) on init failure: "
+        f"{[p.pid for p in leaked]}"
+    )
