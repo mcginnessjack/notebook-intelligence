@@ -21,7 +21,7 @@ import logging
 from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
 from anthropic.types.text_block import TextBlock as AnthropicTextBlock
 
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, resolve_claude_cli_path
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, resolve_claude_cli_path, safe_jupyter_path
 
 log = logging.getLogger(__name__)
 
@@ -1070,16 +1070,36 @@ async def save_notebook(args) -> str:
 @tool("run-command-in-jupyter-terminal", "Runs a shell command in a Jupyter terminal within working_directory.", {"command": str, "working_directory": str})
 async def run_command_in_jupyter_terminal(args) -> str:
     """Run a shell command in a Jupyter terminal within working_directory. This can be used to run long running processes like web applications. Returns the output of the command.
-    
+
     Args:
         command: Shell command to execute in the terminal
         working_directory: Directory to execute command in (relative to Jupyter working directory, default is '' which translates to the Jupyter working directory root)
     """
     try:
+        # Mirror the sandbox the sibling built-in tool applies (see
+        # built_in_toolsets.run_command_in_jupyter_terminal): the cwd is
+        # forwarded to a JupyterLab UI command that opens a real terminal
+        # at any path the user can read, so an LLM-supplied '/etc',
+        # '../../..', or a workspace symlink would otherwise land a shell
+        # outside jupyter_root_dir. Apply the same gate server-side
+        # before the UI bridge is invoked.
+        working_directory = args.get('working_directory', '') or ''
+        try:
+            work_dir = safe_jupyter_path(working_directory)
+        except ValueError as e:
+            return tool_text_response(f"Error: {e}")
+        if not work_dir.exists():
+            return tool_text_response(
+                f"Directory '{working_directory}' does not exist"
+            )
+        if not work_dir.is_dir():
+            return tool_text_response(
+                f"'{working_directory}' is not a directory"
+            )
         response = get_current_response()
         ui_cmd_response = await response.run_ui_command('notebook-intelligence:run-command-in-terminal', {
             'command': args['command'],
-            'cwd': args['working_directory']
+            'cwd': str(work_dir),
         })
         return tool_text_response(ui_cmd_response)
     except Exception as e:
@@ -1089,14 +1109,26 @@ async def run_command_in_jupyter_terminal(args) -> str:
 @tool("open-file-in-jupyter-ui", "Opens a file in the Jupyter UI.", {"file_path": str})
 async def open_file_in_jupyter_ui(args) -> str:
     """Open a file in the Jupyter UI.
-    
+
     Args:
         file_path: Path to the file to open
     """
     try:
+        # ``docmanager:open`` routes the path through JupyterLab's
+        # contents service, which is rooted at ``jupyter_root_dir`` and
+        # rejects out-of-root absolute paths today. Re-apply the same
+        # containment check server-side so we don't depend on that
+        # framework behavior being correct in perpetuity, and so the LLM
+        # gets the same error wording every other path-bearing tool uses
+        # instead of a JupyterLab-internal 404 string.
+        file_path = args.get('file_path', '') or ''
+        try:
+            target = safe_jupyter_path(file_path)
+        except ValueError as e:
+            return tool_text_response(f"Error: {e}")
         response = get_current_response()
         ui_cmd_response = await response.run_ui_command('docmanager:open', {
-            'path': args['file_path']
+            'path': str(target),
         })
         return tool_text_response(ui_cmd_response)
     except Exception as e:
