@@ -81,6 +81,8 @@ JSON is also accepted (the parser is `yaml.safe_load`).
 
 The order of sources in the list determines first-wins precedence. A URL containing a literal comma is not supported.
 
+> **Trust-boundary note for `NBI_MANAGED_SKILLS_TOKEN`.** When set, the token is sent as a `Bearer` `Authorization` header to **every** URL in the manifest list, including non-GitHub hosts. The no-redirect handler blocks server-side redirect-driven leaks, but it cannot stop a typo'd entry from receiving the token. If you mix trust domains (e.g. an org-internal manifest URL plus an external one), either point every source at the same trust boundary or split the deployment into separate spawn profiles with their own tokens.
+
 ### Multi-tenant scoping
 
 Different JupyterHub profiles or spawner configurations can point at different manifests by setting `NBI_SKILLS_MANIFEST` per profile. Within a single user's install, skills are namespaced by name — so two profiles that both install a skill called `data-eda` will collide if a user moves between them. Use distinct skill names across teams to avoid this.

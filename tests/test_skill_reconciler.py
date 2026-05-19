@@ -393,6 +393,38 @@ class TestBackgroundThread:
         reconciler.stop()
         reconciler.stop()
 
+    def test_concurrent_start_does_not_spawn_two_threads(self, manager, tmp_path):
+        # The admin kill-switch endpoint is reachable from any authenticated
+        # request, so a start/stop race is reachable in practice. Pin that
+        # two concurrent starts produce exactly one tracked thread, with no
+        # orphaned daemons running in the background.
+        manifest = _write_manifest(tmp_path, "")
+        reconciler = SkillReconciler(manager, [manifest], interval_seconds=60)
+        before = threading.active_count()
+        barrier = threading.Barrier(8)
+
+        def racer():
+            barrier.wait()
+            reconciler.start()
+
+        racers = [threading.Thread(target=racer) for _ in range(8)]
+        for t in racers:
+            t.start()
+        for t in racers:
+            t.join(timeout=2.0)
+
+        try:
+            assert reconciler.is_running() is True
+            # Exactly one reconciler thread should be active: thread count
+            # may have one extra during teardown of the racers, but never
+            # eight extra reconciler threads.
+            after = threading.active_count()
+            assert after - before <= 2, (
+                f"start() raced: active threads grew by {after - before}"
+            )
+        finally:
+            reconciler.stop()
+
     def test_is_running_reflects_thread_state(self, manager, tmp_path):
         manifest = _write_manifest(tmp_path, "")
         reconciler = SkillReconciler(manager, [manifest], interval_seconds=60)
@@ -687,6 +719,46 @@ class TestMultipleManifests:
         assert result.added == 0
         assert result.removed == 0
         assert len(result.errors) == 2
+
+    def test_empty_manifest_counts_as_loaded_and_runs_stale_removal(
+        self, manager, tmp_path, skill_dirs
+    ):
+        # A manifest that parses to `skills: []` is treated as a successful
+        # load (it contributes zero entries but is reachable and well-formed).
+        # That means stale-removal still runs against the union of all loaded
+        # manifests. Pin this so a future "treat empty manifest as failed"
+        # refactor surfaces in CI; the operator-facing contract is "an empty
+        # manifest means you intentionally cleared it."
+        user_dir, _ = skill_dirs
+        orphan = user_dir / "alpha"
+        orphan.mkdir()
+        (orphan / SKILL_ENTRY_FILE).write_text(
+            serialize_skill_md(
+                "alpha", "d", [], "b",
+                managed_source="https://github.com/org/repo/tree/main/alpha",
+                managed_ref="sha",
+            ),
+            encoding="utf-8",
+        )
+        empty = self._write(tmp_path, "empty.yaml", "skills: []\n")
+        other = self._write(
+            tmp_path,
+            "other.yaml",
+            "skills:\n  - url: https://github.com/org/repo/tree/main/beta\n",
+        )
+        reconciler = SkillReconciler(
+            manager, [empty, other], interval_seconds=60
+        )
+        tar = build_tarball({
+            "repo-xyz/beta/SKILL.md": "---\nname: beta\ndescription: b\n---\n",
+        })
+        with _patch_sha("sha"), _patch_tarball(tar):
+            result = reconciler.reconcile()
+
+        # Both manifests loaded → all_sources_loaded → stale-removal ran.
+        # Alpha was not in any manifest → removed.
+        assert result.removed == 1
+        assert not orphan.exists()
 
     def test_empty_sources_disables_reconcile(self, manager, tmp_path):
         # Construct directly with an empty list. The wire-up in

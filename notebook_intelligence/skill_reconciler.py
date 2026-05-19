@@ -76,6 +76,12 @@ class SkillReconciler:
         self._managed_token = managed_token
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        # Guards `_thread` / `_stop` mutations across `start()` / `stop()`.
+        # The admin kill-switch endpoint (`SkillsReconcilerStopHandler`) is
+        # reachable from any authenticated request and a double-click during
+        # an incident must not orphan a daemon thread or race start()'s
+        # `_stop.clear()` against stop()'s `_stop.set()`.
+        self._lifecycle_lock = threading.Lock()
 
     def reconcile(self) -> ReconcileResult:
         """One pass: load manifests, apply installs/updates/removes. Synchronous."""
@@ -136,22 +142,28 @@ class SkillReconciler:
         return result
 
     def start(self) -> None:
-        if self._thread is not None:
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(
-            name="Skill Reconciler",
-            target=self._run_loop,
-            daemon=True,
-        )
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread is not None:
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(
+                name="Skill Reconciler",
+                target=self._run_loop,
+                daemon=True,
+            )
+            self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
-        thread = self._thread
-        self._stop.set()
+        # Signal first, then join outside the lock so an admin who hits the
+        # kill switch a second time during a hung fetch doesn't block on a
+        # held lifecycle lock — the second call sees `_thread is None` and
+        # is a fast no-op.
+        with self._lifecycle_lock:
+            thread = self._thread
+            self._thread = None
+            self._stop.set()
         if thread is not None:
             thread.join(timeout=timeout)
-        self._thread = None
 
     def is_running(self) -> bool:
         thread = self._thread
