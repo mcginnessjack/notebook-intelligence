@@ -9,7 +9,18 @@ from pathlib import Path
 import subprocess
 import shlex
 
-from notebook_intelligence.util import get_jupyter_root_dir, redact_env_secrets
+from notebook_intelligence.util import (
+    get_jupyter_root_dir,
+    redact_env_secrets,
+    safe_jupyter_path,
+)
+
+# Backwards-compatible alias: this used to live here as a private helper.
+# Lifted to util.py so Claude-mode tool registrations can share the same
+# gate without an import cycle. Existing call sites in this module keep
+# working through the alias; new code should call ``safe_jupyter_path``
+# directly.
+_get_safe_path = safe_jupyter_path
 
 log = logging.getLogger(__name__)
 
@@ -198,40 +209,6 @@ async def set_file_content(content: str, **args) -> str:
     ui_cmd_response = await response.run_ui_command('notebook-intelligence:set-current-file-content', {"content": content})
 
     return f"Set the file content"
-
-def _get_safe_path(path: str) -> Path:
-    """Validate and return a safe path within jupyter_root_dir.
-    
-    Args:
-        path: Relative or absolute path to validate
-        
-    Returns:
-        Resolved absolute Path object
-        
-    Raises:
-        ValueError: If path is outside jupyter_root_dir
-    """
-    jupyter_root_dir = get_jupyter_root_dir()
-    if jupyter_root_dir is None:
-        raise ValueError("Jupyter root directory is not set")
-
-    root_dir = Path(jupyter_root_dir).expanduser().resolve()
-    target_path = Path(path).expanduser()
-    
-    # If it's a relative path, make it relative to root_dir
-    if not target_path.is_absolute():
-        target_path = root_dir / target_path
-    
-    # Resolve to absolute path
-    target_path = target_path.resolve()
-    
-    # Check if target is within root directory
-    try:
-        target_path.relative_to(root_dir)
-    except ValueError:
-        raise ValueError(f"Path '{path}' is outside allowed directory '{jupyter_root_dir}'")
-    
-    return target_path
 
 @nbapi.tool
 async def search_files(
