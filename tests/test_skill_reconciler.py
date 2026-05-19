@@ -546,6 +546,42 @@ class TestMultipleManifests:
         assert (user_dir / "alpha").exists()
         assert (user_dir / "beta").exists()
 
+    def test_partial_failure_missing_first_preserves_managed_skills(
+        self, manager, tmp_path, skill_dirs
+    ):
+        # Reverse-order sibling of the partial-failure test below. Iteration
+        # order shouldn't change behavior — failure on any source must
+        # suppress stale-removal regardless of position in the list.
+        user_dir, _ = skill_dirs
+        owned = user_dir / "alpha"
+        owned.mkdir()
+        (owned / SKILL_ENTRY_FILE).write_text(
+            serialize_skill_md(
+                "alpha", "d", [], "b",
+                managed_source="https://github.com/org/repo/tree/main/alpha",
+                managed_ref="sha",
+            ),
+            encoding="utf-8",
+        )
+        missing = str(tmp_path / "does-not-exist.yaml")
+        good = self._write(
+            tmp_path,
+            "good.yaml",
+            "skills:\n  - url: https://github.com/org/repo/tree/main/beta\n",
+        )
+        reconciler = SkillReconciler(
+            manager, [missing, good], interval_seconds=60
+        )
+        tar = build_tarball({
+            "repo-xyz/beta/SKILL.md": "---\nname: beta\ndescription: b\n---\n",
+        })
+        with _patch_sha("sha"), _patch_tarball(tar):
+            result = reconciler.reconcile()
+
+        assert any(missing in err for err in result.errors)
+        assert result.removed == 0
+        assert owned.exists()
+
     def test_partial_load_failure_preserves_managed_skills(
         self, manager, tmp_path, skill_dirs
     ):

@@ -27,8 +27,11 @@ from typing import List, Optional
 
 import yaml
 
-from notebook_intelligence.skill_github_import import parse_github_url
-from notebook_intelligence.util import resolve_github_token
+from notebook_intelligence.skill_github_import import (
+    _slug as _slug_skill_name,
+    parse_github_url,
+)
+from notebook_intelligence.util import resolve_github_token, split_csv as _split_csv
 from notebook_intelligence.skillset import SKILL_NAME_PATTERN
 
 log = logging.getLogger(__name__)
@@ -155,39 +158,40 @@ def load_manifest(source: str, *, token: Optional[str] = None) -> SkillsManifest
 def split_sources(raw: str) -> List[str]:
     """Split a comma-separated list of manifest sources.
 
-    Empty input or all-whitespace input → empty list. Whitespace around each
-    entry is stripped, empty entries are dropped, so values like
-    ``"a, b,,c "`` and ``", , "`` are handled. URLs containing literal commas
-    are not supported and will split; the operator should rename/relocate
-    such manifests.
+    Empty input or all-whitespace input → empty list. URLs containing
+    literal commas are not supported and will split; the operator should
+    rename/relocate such manifests. Thin shim over the shared
+    ``util.split_csv`` so the wire-format contract stays consistent with
+    the rest of NBI's comma-separated env vars.
     """
-    if not isinstance(raw, str):
-        return []
-    return [s for s in (part.strip() for part in raw.split(",")) if s]
+    return _split_csv(raw)
 
 
 def _predicted_name(entry: ManifestEntry) -> Optional[str]:
     """Best-effort prediction of the on-disk skill name for dedupe.
 
-    Used by ``load_manifests`` to catch name collisions across different URLs
-    before the reconciler installs them (the reconciler would otherwise
-    silently let the second managed install overwrite the first). Returns
-    ``None`` when the name cannot be predicted, in which case dedupe falls
-    through and the collision is left for the reconciler to handle (or miss,
-    in the rare case where two SKILL.md files declare the same ``name``
-    frontmatter from different repo paths).
+    Mirrors the slug + fallback rules that the real installer applies in
+    ``skill_github_import._derive_name`` (without the frontmatter step —
+    that requires fetching the bundle). The slug step is load-bearing:
+    a path like ``.../tree/main/Data EDA`` installs as ``data-eda`` and
+    must dedupe against an explicit ``name: data-eda`` entry from
+    another manifest.
+
+    Returns ``None`` for non-GitHub URLs so the caller can warn about
+    the dropped dedupe; the eventual install-time collision will still
+    surface as an error, but the operator deserves a heads-up.
     """
     if entry.name:
-        return entry.name
+        return _slug_skill_name(entry.name)
     try:
         info = parse_github_url(entry.url)
     except ValueError:
         return None
-    # Last subpath segment is the skill directory name in the canonical
-    # GitHub layout (e.g. ".../tree/main/skills/data-eda" → "data-eda").
-    # Falls back to the repo name when the skill sits at the repo root.
-    segment = info.subpath.rstrip("/").rsplit("/", 1)[-1] if info.subpath else ""
-    return segment or info.repo
+    raw = info.subpath.rstrip("/").rsplit("/", 1)[-1] if info.subpath else ""
+    candidate = _slug_skill_name(raw) if raw else ""
+    if not candidate:
+        candidate = _slug_skill_name(info.repo)
+    return candidate or None
 
 
 def load_manifests(
@@ -238,7 +242,18 @@ def load_manifests(
                 continue
             seen_urls[entry.url] = source
             predicted = _predicted_name(entry)
-            if predicted and predicted in seen_names:
+            if predicted is None:
+                # Non-GitHub URL or unparseable. Cross-manifest name dedupe
+                # can't run for this entry; the install-time collision check
+                # in SkillManager is the only remaining guard.
+                warnings.append(
+                    f"skills_manifest: cannot predict installed name for "
+                    f"{entry.url!r} ({source!r}); cross-manifest name "
+                    f"dedupe skipped for this entry"
+                )
+                merged.append(entry)
+                continue
+            if predicted in seen_names:
                 first_source, first_url = seen_names[predicted]
                 errors.append(
                     f"skill {predicted!r}: name collision; first installed "
@@ -246,8 +261,7 @@ def load_manifests(
                     f"{entry.url!r} ({source!r})"
                 )
                 continue
-            if predicted:
-                seen_names[predicted] = (source, entry.url)
+            seen_names[predicted] = (source, entry.url)
             merged.append(entry)
 
     return MergedManifest(

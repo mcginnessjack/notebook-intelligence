@@ -387,6 +387,97 @@ class TestLoadManifests:
             req = call.args[0]
             assert req.headers.get("Authorization") == "Bearer shared-token"
 
+    def test_name_collision_via_slugging(self, tmp_path):
+        # Predicted-name dedupe must run through the same slug step as the
+        # real installer: an entry with a subpath that slugs to "data-eda"
+        # collides with another manifest's URL whose subpath segment also
+        # slugs to "data-eda" (different casing / repo / owner).
+        a = self._write_manifest(
+            tmp_path,
+            "slug-a.yaml",
+            "skills:\n"
+            "  - url: https://github.com/org-a/repo/tree/main/skills/data-eda\n",
+        )
+        # `Data_EDA` in the subpath slugs to `data-eda`. Without _slug(), the
+        # raw segment ("Data_EDA") would not match "data-eda" and dedupe
+        # would slip through.
+        b = self._write_manifest(
+            tmp_path,
+            "slug-b.yaml",
+            "skills:\n"
+            "  - url: https://github.com/org-b/other/tree/main/Data_EDA\n",
+        )
+        result = load_manifests([a, b])
+        assert len(result.manifest.entries) == 1
+        assert len(result.errors) == 1
+        assert "data-eda" in result.errors[0]
+
+    def test_non_github_url_warns_and_keeps_entry(self, tmp_path):
+        # A filesystem path or non-GitHub URL used as an entry URL fails
+        # parse; predicted-name dedupe drops out with a warning so the
+        # operator knows the cross-manifest check didn't run.
+        a = self._write_manifest(
+            tmp_path,
+            "weird.yaml",
+            "skills:\n  - url: /opt/local-skill\n",
+        )
+        result = load_manifests([a])
+        # The entry survives (only cross-manifest dedupe was skipped).
+        assert len(result.manifest.entries) == 1
+        assert len(result.warnings) == 1
+        assert "cannot predict installed name" in result.warnings[0]
+
+    def test_partial_failure_missing_first(self, tmp_path):
+        # The reverse ordering of the partial-failure test in the reconciler
+        # suite: broken source first, good source second. Iteration order
+        # shouldn't change which entries survive or which errors fire.
+        missing = str(tmp_path / "nope.yaml")
+        good = self._write_manifest(
+            tmp_path,
+            "good.yaml",
+            "skills:\n  - url: https://github.com/org/repo/tree/main/alpha\n",
+        )
+        result = load_manifests([missing, good])
+        assert len(result.manifest.entries) == 1
+        assert result.manifest.entries[0].url.endswith("/alpha")
+        assert len(result.errors) == 1
+        assert missing in result.errors[0]
+        assert result.loaded_sources == [good]
+
+    def test_url_fetch_error_isolated(self):
+        # A urllib URLError on one source must not stop the loader from
+        # picking up the next; the failure surfaces in `errors` and the
+        # source drops from `loaded_sources`.
+        from io import BytesIO
+        from urllib.error import URLError
+
+        def fake_resp(body):
+            resp = BytesIO(body)
+            resp.__enter__ = lambda self: self  # type: ignore[attr-defined]
+            resp.__exit__ = lambda self, *a: False  # type: ignore[attr-defined]
+            return resp
+
+        good_body = b"skills:\n  - url: https://github.com/org/repo/tree/main/x\n"
+
+        def opener(req, timeout):
+            if "broken" in req.full_url:
+                raise URLError("connection refused")
+            return fake_resp(good_body)
+
+        with patch(
+            "notebook_intelligence.skill_manifest._urlopen_no_redirect",
+            side_effect=opener,
+        ):
+            result = load_manifests(
+                [
+                    "https://example.com/broken.yaml",
+                    "https://example.com/good.yaml",
+                ]
+            )
+        assert len(result.manifest.entries) == 1
+        assert any("broken" in e for e in result.errors)
+        assert result.loaded_sources == ["https://example.com/good.yaml"]
+
     def test_order_preserved_across_sources(self, tmp_path):
         # Entries appear in the order their source was listed, and in the
         # order they appear inside each source. Stable order matters for the
