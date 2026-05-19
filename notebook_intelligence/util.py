@@ -5,6 +5,7 @@ import base64
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Optional, Set
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -21,6 +22,53 @@ def set_jupyter_root_dir(root_dir: str):
 
 def get_jupyter_root_dir() -> str:
     return _jupyter_root_dir
+
+
+def safe_jupyter_path(path: str) -> Path:
+    """Resolve ``path`` and confirm it stays inside ``jupyter_root_dir``.
+
+    The single chokepoint every tool / handler should funnel an LLM-supplied
+    path through before handing it to ``subprocess.Popen(cwd=...)``,
+    ``docmanager:open``, ``terminal:create-new``, or any other shell- or
+    UI-bridge that would otherwise honor an absolute path or a ``..``
+    traversal. Relative paths are interpreted relative to the workspace
+    root. ``Path.resolve()`` collapses ``..`` segments and chases symlinks
+    before the containment check, so a workspace-internal symlink
+    pointing outside is also rejected.
+
+    Returns the resolved absolute ``Path``. Raises ``ValueError`` when the
+    LLM-supplied input is rejected (outside the workspace, embedded NUL,
+    or otherwise unrepresentable). Raises ``RuntimeError`` for the
+    "workspace root not set" case so callers that do ``except ValueError``
+    to surface a sandbox-violation message to the LLM don't accidentally
+    swallow a server-side misconfiguration as if it were user input.
+    Callers handle existence / file-vs-directory checks themselves so
+    they can produce the contextual error message the LLM needs to
+    correct its tool call.
+    """
+    jupyter_root_dir = get_jupyter_root_dir()
+    if jupyter_root_dir is None:
+        raise RuntimeError(
+            "Jupyter root directory is not set; "
+            "set_jupyter_root_dir was not called before this code path."
+        )
+
+    root_dir = Path(jupyter_root_dir).expanduser().resolve()
+    target_path = Path(path).expanduser()
+
+    if not target_path.is_absolute():
+        target_path = root_dir / target_path
+
+    target_path = target_path.resolve()
+
+    try:
+        target_path.relative_to(root_dir)
+    except ValueError:
+        raise ValueError(
+            f"Path '{path}' is outside allowed directory '{jupyter_root_dir}'"
+        )
+
+    return target_path
 
 
 _cached_cli_paths: dict[str, Optional[str]] = {}

@@ -5,6 +5,7 @@ import os
 import sys
 import asyncio
 from enum import Enum
+from pathlib import Path
 from queue import Queue
 import threading
 import time
@@ -21,7 +22,7 @@ import logging
 from claude_agent_sdk import AssistantMessage, PermissionResultAllow, PermissionResultDeny, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient, tool
 from anthropic.types.text_block import TextBlock as AnthropicTextBlock
 
-from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, resolve_claude_cli_path
+from notebook_intelligence.util import ThreadSafeWebSocketConnector, _emit, get_jupyter_root_dir, resolve_claude_cli_path, safe_jupyter_path
 
 log = logging.getLogger(__name__)
 
@@ -152,13 +153,24 @@ def get_current_claude_client() -> ClaudeSDKClient:
     global _current_claude_client
     return _current_claude_client
 
-def tool_text_response(text: Any) -> dict[str, Any]:
-    return {
+def tool_text_response(text: Any, *, is_error: bool = False) -> dict[str, Any]:
+    """Shape an MCP tool result. Set ``is_error=True`` for rejection paths.
+
+    The Claude Agent SDK reads ``result.get("is_error", False)`` and maps
+    it to ``CallToolResult.isError``. Without the flag, model-side retry
+    heuristics treat rejection text as authoritative output instead of a
+    fault to recover from, so a tool call rejected for security reasons
+    can leak into chat as a confusing "successful" result.
+    """
+    result: dict[str, Any] = {
         "content": [{
             "type": "text",
             "text": str(text)
         }]
     }
+    if is_error:
+        result["is_error"] = True
+    return result
 
 def model_info_from_id(model_id: str) -> dict:
     """Get model info, checking cached models first then falling back to defaults."""
@@ -1070,37 +1082,86 @@ async def save_notebook(args) -> str:
 @tool("run-command-in-jupyter-terminal", "Runs a shell command in a Jupyter terminal within working_directory.", {"command": str, "working_directory": str})
 async def run_command_in_jupyter_terminal(args) -> str:
     """Run a shell command in a Jupyter terminal within working_directory. This can be used to run long running processes like web applications. Returns the output of the command.
-    
+
     Args:
         command: Shell command to execute in the terminal
         working_directory: Directory to execute command in (relative to Jupyter working directory, default is '' which translates to the Jupyter working directory root)
     """
     try:
+        # Mirror the sandbox the sibling built-in tool applies (see
+        # built_in_toolsets.run_command_in_jupyter_terminal): the cwd is
+        # forwarded to a JupyterLab UI command that opens a real terminal
+        # at any path the user can read, so an LLM-supplied '/etc',
+        # '../../..', or a workspace symlink would otherwise land a shell
+        # outside jupyter_root_dir. Apply the same gate server-side
+        # before the UI bridge is invoked.
+        working_directory = args.get('working_directory', '') or ''
+        try:
+            work_dir = safe_jupyter_path(working_directory)
+        except ValueError as e:
+            return tool_text_response(f"Error: {e}", is_error=True)
+        if not work_dir.exists():
+            return tool_text_response(
+                f"Directory '{working_directory}' does not exist",
+                is_error=True,
+            )
+        if not work_dir.is_dir():
+            return tool_text_response(
+                f"'{working_directory}' is not a directory",
+                is_error=True,
+            )
         response = get_current_response()
+        # The frontend command forwards `cwd` directly to JupyterLab's
+        # terminal service (`terminal:create-new`), which hands the
+        # value to a real PTY spawn that honors absolute paths. Send
+        # the sandboxed absolute path so any intermediate that does
+        # cwd-relative resolution can't double-resolve into a different
+        # target.
         ui_cmd_response = await response.run_ui_command('notebook-intelligence:run-command-in-terminal', {
             'command': args['command'],
-            'cwd': args['working_directory']
+            'cwd': str(work_dir),
         })
         return tool_text_response(ui_cmd_response)
     except Exception as e:
-        return tool_text_response(f"Error running command in Jupyter terminal: {str(e)}")
+        return tool_text_response(
+            f"Error running command in Jupyter terminal: {str(e)}",
+            is_error=True,
+        )
 
 
 @tool("open-file-in-jupyter-ui", "Opens a file in the Jupyter UI.", {"file_path": str})
 async def open_file_in_jupyter_ui(args) -> str:
     """Open a file in the Jupyter UI.
-    
+
     Args:
         file_path: Path to the file to open
     """
     try:
+        # ``docmanager:open`` routes the path through JupyterLab's
+        # contents service, which is rooted at ``jupyter_root_dir``.
+        # The contents service strips a leading slash and rejoins under
+        # the root (jupyter_server/utils.py: to_os_path), so forwarding
+        # an absolute path would turn '/x/y/foo.ipynb' into
+        # '{root}/x/y/foo.ipynb' and 404. Forward the path *relative to
+        # the workspace root* instead, after safe_jupyter_path has
+        # resolved symlinks / ``..`` and confirmed containment.
+        file_path = args.get('file_path', '') or ''
+        try:
+            target = safe_jupyter_path(file_path)
+        except ValueError as e:
+            return tool_text_response(f"Error: {e}", is_error=True)
+        root_dir = Path(get_jupyter_root_dir()).expanduser().resolve()
+        relative_path = target.relative_to(root_dir).as_posix()
         response = get_current_response()
         ui_cmd_response = await response.run_ui_command('docmanager:open', {
-            'path': args['file_path']
+            'path': relative_path,
         })
         return tool_text_response(ui_cmd_response)
     except Exception as e:
-        return tool_text_response(f"Error opening file in Jupyter UI: {str(e)}")
+        return tool_text_response(
+            f"Error opening file in Jupyter UI: {str(e)}",
+            is_error=True,
+        )
 
 async def custom_permission_handler(
     tool_name: str,
