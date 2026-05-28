@@ -55,7 +55,9 @@ async def add_markdown_cell(source: str, **args) -> str:
     """
     response = args["response"]
     ui_cmd_response = await response.run_ui_command('notebook-intelligence:add-markdown-cell-to-active-notebook', {'source': source})
-
+    cell_index = ui_cmd_response.get("cellIndex") if isinstance(ui_cmd_response, dict) else None
+    if isinstance(cell_index, int):
+        return f"Added markdown cell at index {cell_index}"
     return "Added markdown cell to notebook"
 
 @nbapi.auto_approve
@@ -67,7 +69,9 @@ async def add_code_cell(source: str, **args) -> str:
     """
     response = args["response"]
     ui_cmd_response = await response.run_ui_command('notebook-intelligence:add-code-cell-to-active-notebook', {'source': source})
-
+    cell_index = ui_cmd_response.get("cellIndex") if isinstance(ui_cmd_response, dict) else None
+    if isinstance(cell_index, int):
+        return f"Added code cell at index {cell_index}"
     return "Added code cell to notebook"
 
 @nbapi.auto_approve
