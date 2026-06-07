@@ -717,6 +717,7 @@ NBI is tested against the JupyterLab and `jupyter_server` versions declared in [
 
 | NBI version | JupyterLab | jupyter_server | Python    |
 | ----------- | ---------- | -------------- | --------- |
+| 5.1.x       | 4.x        | 2.x            | 3.10+     |
 | 5.0.x       | 4.x        | 2.x            | 3.10+     |
 | 4.8.x       | 4.x        | 2.x            | 3.10+     |
 | 4.7.x       | 4.x        | 2.x            | 3.10+     |
@@ -729,7 +730,7 @@ Upper bounds for `litellm`, `claude-agent-sdk`, `anthropic`, and `mcp` are not p
 
 ```bash
 pip install \
-  "notebook-intelligence==5.0.*" \
+  "notebook-intelligence==5.1.*" \
   "litellm==1.83.*" \
   "claude-agent-sdk==0.x.*" \
   "anthropic==0.x.*" \
