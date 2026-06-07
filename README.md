@@ -94,7 +94,7 @@ If the Claude Code CLI is on `PATH`, NBI launches it automatically. To override 
 
 When Claude mode is on, the chat sidebar shows a history icon next to the gear. Click it to list the Claude Code sessions recorded for the current working directory (the same transcripts the Claude Code CLI stores under `~/.claude/projects/`). Selecting a session reconnects via `resume`, so the next message you send continues that transcript with full prior context. A **New chat session** button next to the gear restarts the SDK client without typing `/clear`.
 
-Long Claude turns surface an elapsed-time counter, a heartbeat-driven pulse with a "may be slow" copy flip after 30 seconds, and inline tool-call narration so the sidebar reflects what the agent is doing rather than appearing stuck.
+Long Claude turns surface an elapsed-time counter and a heartbeat-driven pulse with a "may be slow" copy flip after 30 seconds. Each tool the agent runs shows up as a persistent status card with a kind icon and a live in-progress / done / failed state; edits carry an inline diff, and a run of consecutive calls collapses into one expandable group, so the sidebar reflects what the agent is doing rather than appearing stuck.
 
 In Claude mode, workspace files attached as chat context arrive as `@`-mention pointers rather than inlined file contents. Claude's Read tool fetches them on demand, which means images, large files, and notebooks (cell-aware) now work where the older content-injection path silently truncated or skipped them.
 

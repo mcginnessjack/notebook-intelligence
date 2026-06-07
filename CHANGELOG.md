@@ -10,6 +10,33 @@ For each release we list user-facing changes grouped as **Added**, **Changed**, 
 
 ## [Unreleased]
 
+## [5.1.0] - UNRELEASED
+
+5.1.0 builds on 5.0.x with a focus on Claude-mode agent visibility. Tool calls the agent runs now render as persistent status cards with inline diffs and collapsible grouping, the generating indicator can cycle custom verbs, and cancelling a turn tears down the whole process tree the agent spawned instead of leaking it. It also adds two opt-in security guardrails (an MCP stdio-command allowlist and a default-token-password check on shared filesystems) and an always-visible mode for chat feedback. No traitlet, env-var, REST route, or on-disk-format renames or removals; every new admin surface is opt-in and listed below.
+
+### Added
+
+- **Claude agent tool calls render as persistent status cards** (#358). Each tool the agent runs in Claude mode appears as its own card showing a kind icon (read / edit / execute / other), a humanized label, and a live status (in progress, completed, failed, cancelled) that stays on screen after the turn ends instead of scrolling away as transient progress text. Built-in and `mcp__<server>__<tool>` names map to friendly labels, with a sentence-case fallback for unknown tools.
+- **Inline diffs, collapsible grouping, and unified tool maps for tool-call cards** (#360). Edit-style tools (`Edit`, `MultiEdit`, `Write`, and their MCP-wrapped variants) show an inline add/remove diff on the card, capped and truncation-marked for large changes. A run of consecutive tool calls collapses into a single expandable group so a tool-heavy turn reads as one unit rather than a wall of rows; large settled groups start collapsed, live ones stay expanded. The kind/label lookups are unified into one map shared by the humanizer and the categorizer.
+- **Custom Claude spinner verbs** (#356). When Claude mode is active, NBI reads `spinnerVerbs.verbs` from `~/.claude/settings.json` and cycles them in the generating label (Fisher-Yates shuffle, 4-7s per verb, no immediate repeats) instead of a static "Generating". The current verb is mirrored into a hidden `aria-live` region so screen readers announce verb changes without re-reading every elapsed-seconds tick.
+- **Always-visible chat feedback** (#354). New `enable_chat_feedback_always_visible` traitlet (default `False`, requires `enable_chat_feedback = True`) renders the thumbs up/down buttons at full opacity on every assistant reply instead of revealing them on hover, and drops the post-`StreamEnd` gate so they appear with the reply. The thumbs tooltips are reworded to "Good response" / "Bad response" (screen readers announce "Rate response as good" / "Rate response as bad").
+- **Admin allowlist for stdio MCP server commands** (#298). New `mcp_stdio_command_allowlist` traitlet and `NBI_MCP_STDIO_COMMAND_ALLOWLIST` env var (CSV, appended to the traitlet at startup). When non-empty, every stdio MCP server (added via Claude `mcp add` or loaded from `mcp.json`) must match at least one `re.search` regex or the admin gate rejects it; the empty default means no enforcement, so per-user deployments are unchanged. See [Restricting MCP stdio commands](docs/admin-guide.md#restricting-mcp-stdio-commands).
+- **Default-token-password guardrails on shared filesystems** (#302). The GitHub Copilot token storage path now logs a per-process warning the first time it reads or writes the stored token while the public default `NBI_GH_ACCESS_TOKEN_PASSWORD` is in use, escalated when `~/.jupyter/nbi/` is group- or other-accessible. Setting `NBI_REFUSE_DEFAULT_TOKEN_PASSWORD_ON_SHARED_FS=1` upgrades that to a hard refusal of the write when both conditions hold; `NBI_ALLOW_DEFAULT_TOKEN_PASSWORD=1` opts back out per pod. The shared-directory check is POSIX-only and the refusal is opt-in, so single-user deployments are unaffected.
+- **Claude Code vs NBI chat performance benchmark suite** (#350). A standalone suite under `benchmarks/claude_perf/` compares response times between the `claude -p` terminal CLI and NBI's chat WebSocket path (time to first token, wall time, tokens, cost), with a runner that interleaves the two paths and separates cold from warm runs. Developer tooling; not shipped in the extension.
+- **Opt-in Prettier pre-commit hook and editor format-on-save** (#355). A husky + lint-staged hook formats staged files on commit, alongside EditorConfig and VS Code format-on-save settings. Developer tooling.
+
+### Changed
+
+- **Notebook-agent prompts and tool responses** (#351). Notebook editing/execution prompts now encourage incremental analysis and intermediate validation rather than generating a whole notebook in one pass; `add-code-cell` and `add-markdown-cell` return the inserted `cellIndex` for traceability; and `read_file` caps its output with UTF-8-safe truncation so large reads stay within a budget.
+- **Expandable parameter/detail boxes use a flat fill** instead of the inner-glow effect (#361), for a cleaner read in both light and dark themes.
+
+### Fixed
+
+- **Cancelling a Claude turn tears down the whole process tree** the agent spawned (#357). A cancel previously killed only the direct `claude` CLI child, leaking reparented shells, MCP servers, and dev servers that accumulated across cancels and restarts; NBI now reaps the agent's descendants, gracefully then forcefully, without signalling the Jupyter server's own process group.
+- **Claude session-resume commands are shell-quoted** (#349). Resume launches route through the shared command builder and quote the transcript-derived session id, so malicious session metadata cannot break out of `claude --resume` into shell execution.
+- **Forged upload-context paths are rejected** (#348). WebSocket upload attachments must resolve under the server upload root before an image read or Claude file mention uses the supplied path, closing the forged `isUpload` path that could point chat context at arbitrary server-readable files outside the workspace.
+- **Tool-call diffs are readable in dark theme and the tool-call group no longer flickers** (#360, #364). Diff add/remove lines use semi-transparent tints over the card so the theme's own text color stays legible in both themes (the `--jp-*-color3` fills were light pastels in both); and the streaming response keeps a stable message identity, so the tool-call group no longer expands and collapses on its own as calls arrive.
+
 ## [5.0.1] - 2026-05-24
 
 A patch release: one provider-compatibility fix, one chat-rendering fix, and the npm package-scope rename. No traitlet, env-var, REST route, or on-disk-format changes; no migration steps beyond the 5.0.0 note.
